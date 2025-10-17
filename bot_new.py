@@ -147,13 +147,13 @@ async def handle_text(update, context: ContextTypes.DEFAULT_TYPE):
         payload = context.user_data.get('pending_payload', {})
         payload['Definition'] = user_def or payload.get('Definition', '')
 
-        headers = {'X-API-Key': os.getenv('API_KEY', '')}
+        headers = {'X-API-Key': os.getenv('BOT_API_KEY'), "Content-Type": "application/json"}
         try:
-            r = requests.post('http://localhost:5000/words', json=payload, headers=headers, timeout=10)
+            r = requests.post('http://localhost:5000/api/v1/words', json=payload, headers=headers, timeout=10)
             r.raise_for_status()
             await context.bot.send_message(chat_id=chat_id, text='Слово успешно добавлено.')
         except Exception as e:
-            logging.error('Failed to post word: %s', e)
+            logging.error('Failed to post word: %s', e, payload)
             await context.bot.send_message(chat_id=chat_id, text='Не удалось отправить данные на сервер.')
 
         context.user_data.clear()
@@ -177,10 +177,11 @@ async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
 
         # Build payload
         payload = {
-            'UserId': chat_id,
-            'RusWord': word if src == 'ru' else (chosen if dest == 'ru' else ''),
-            'EngWord': chosen if dest == 'en' else (word if src == 'en' else ''),
-            'Definition': ''
+            'userId': chat_id,
+            'theme': 'Example',
+            'word': chosen if dest == 'en' else (word if src == 'en' else ''),
+            'translation': word if src == 'ru' else (chosen if dest == 'ru' else ''),
+            'definition': ''
         }
 
         # Try to fetch English definition if target is English (else skip)

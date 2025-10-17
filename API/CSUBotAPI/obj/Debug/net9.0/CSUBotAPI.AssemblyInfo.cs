@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("CSUBotAPI")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d6f498febab04b7e78d9b80eecba6db819d373ad")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a4b12ac29b956521c0f70c0edcb06f2d9afd62ed")]
 [assembly: System.Reflection.AssemblyProductAttribute("CSUBotAPI")]
 [assembly: System.Reflection.AssemblyTitleAttribute("CSUBotAPI")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
