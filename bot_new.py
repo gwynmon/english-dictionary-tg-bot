@@ -8,7 +8,7 @@ import requests
 import os
 import logging
 import aiohttp
-
+import deepl
 
 load_dotenv('.env')
 
@@ -17,52 +17,40 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+
+DeepL_API_Key = os.getenv('DeepL_API_Key')
+deepl_client = deepl.DeepLClient('85704ee5-f2e9-450b-a005-5fc7efa93604:fx')
+
 TOKEN = os.getenv('TOKEN')
 translator = Translator()
 
+
 # --- Helper functions -----------------------------------------------------
-async def safe_translate(word: str, src: str, dest: str) -> str:
+async def safe_translate(word: str, src: str, dest: str, sorce: str) -> str:
     """
     Асинхронно переводит слово.
     Сначала пробует Google Translate (через googletrans),
     затем — Yandex (если задан YANDEX_API_KEY).
     Возвращает строку перевода (или пустую строку при ошибке).
     """
-    google_text = ''
-    yandex_text = ''
-
     # --- Google Translate ---
-    try:
-        result = await translator.translate(word, src=src, dest=dest)
-        google_text = result.text
-    except Exception as e:
-        logging.warning("Google translate failed: %s", e)
-
-    # --- Yandex Translate ---
-    yandex_key = os.getenv("YANDEX_API_KEY")
-    if yandex_key:
-        params = {
-            "key": yandex_key,
-            "text": word,
-            "lang": f"{src}-{dest}",
-            "format": "plain",
-        }
+    if sorce =='ggl':
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://translate.yandex.net/api/v1.5/tr.json/translate",
-                    data=params,
-                    timeout=10,
-                ) as resp:
-                    if resp.status == 200:
-                        j = await resp.json()
-                        yandex_text = j.get("text", [""])[0]
-                    else:
-                        logging.warning("Yandex API returned status %s", resp.status)
+            result = await translator.translate(word, src=src, dest=dest)
+            google_text = result.text
         except Exception as e:
-            logging.warning("Yandex translate failed: %s", e)
-
-    return google_text or yandex_text or ""
+            logging.warning("Google translate failed: %s", e)
+        return google_text or ""
+    # --- DeepL Translate ---
+    if sorce=='dl' and deepl_client:
+        try:
+            if dest== 'en':
+                dest='EN-US'
+            result = deepl_client.translate_text(word, target_lang=f"{dest}")
+            deepl_text= result.text
+        except Exception as e:
+            logging.warning("DeepL translate failed: %s", e)
+        return deepl_text or ""
 
 
 async def start(update, context: ContextTypes.DEFAULT_TYPE):
@@ -126,11 +114,13 @@ async def handle_text(update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['dest'] = dest
 
         # Get translations
-        google_tr = await safe_translate(word, src=src, dest=dest)
+        google_tr = await safe_translate(word, src=src, dest=dest, sorce='ggl')
         # Try to get yandex only if key provided inside safe_translate
-        yandex_tr = ''  # safe_translate returns one string — for brevity we treat it as alt
+        deepl_tr = await safe_translate(word, src=src, dest=dest, sorce='dl')  
+        
+        # safe_translate returns one string — for brevity we treat it as alt
 
-        variants = [v for v in (google_tr, yandex_tr) if v]
+        variants = [v for v in (google_tr, deepl_tr) if v]
         variants.append('Свой вариант')
 
         # Build inline keyboard
@@ -147,13 +137,13 @@ async def handle_text(update, context: ContextTypes.DEFAULT_TYPE):
         payload = context.user_data.get('pending_payload', {})
         payload['Definition'] = user_def or payload.get('Definition', '')
 
-        headers = {'X-API-Key': os.getenv('BOT_API_KEY'), "Content-Type": "application/json"}
+        headers = {'X-API-Key': os.getenv('API_KEY', '')}
         try:
-            r = requests.post('http://localhost:5000/api/v1/words', json=payload, headers=headers, timeout=10)
+            r = requests.post('http://localhost:5000/words', json=payload, headers=headers, timeout=10)
             r.raise_for_status()
             await context.bot.send_message(chat_id=chat_id, text='Слово успешно добавлено.')
         except Exception as e:
-            logging.error('Failed to post word: %s', e, payload)
+            logging.error('Failed to post word: %s', e)
             await context.bot.send_message(chat_id=chat_id, text='Не удалось отправить данные на сервер.')
 
         context.user_data.clear()
@@ -177,11 +167,10 @@ async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
 
         # Build payload
         payload = {
-            'userId': chat_id,
-            'theme': 'Example',
-            'word': chosen if dest == 'en' else (word if src == 'en' else ''),
-            'translation': word if src == 'ru' else (chosen if dest == 'ru' else ''),
-            'definition': ''
+            'UserId': chat_id,
+            'RusWord': word if src == 'ru' else (chosen if dest == 'ru' else ''),
+            'EngWord': chosen if dest == 'en' else (word if src == 'en' else ''),
+            'Definition': ''
         }
 
         # Try to fetch English definition if target is English (else skip)
