@@ -94,8 +94,6 @@ app.MapGet("/debug/config", (IConfiguration config) =>
     return new { Redis = config["Redis:ConnectionString"], ApiKeySet = hasKey, DbConfigured = dbSet };
 });
 
-app.Urls.Add("http://localhost:5000");
-
 app.MapHealthChecks("/health/ready");
 app.MapHealthChecks("/health/live");
 
