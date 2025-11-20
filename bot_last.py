@@ -135,8 +135,18 @@ async def add_word(update, context: ContextTypes.DEFAULT_TYPE):
 async def process_next_word(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     words_queue = context.user_data.get('words_queue', [])
     if not words_queue:
-        await context.bot.send_message(chat_id=chat_id, text="✅ Все слова обработаны!")
-        context.user_data.clear()
+        # === ИЗМЕНЕНИЕ 3: Добавлено завершающее меню ===
+        keyboard = [
+            [InlineKeyboardButton("Добавить слово", callback_data="post_add")],
+            [InlineKeyboardButton("Проверить знания", callback_data="post_quiz")],
+            [InlineKeyboardButton("Завершить программу", callback_data="post_finish")]
+        ]
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="✅ Все слова добавлены! Хотите сделать что-то ещё?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        context.user_data['mode'] = 'post_actions'
         return
 
     word = words_queue[0]
@@ -159,6 +169,9 @@ async def process_next_word(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     for tr in unique_variants:
         keyboard.append([InlineKeyboardButton(tr, callback_data=f"select_trans::{tr}")])
     keyboard.append([InlineKeyboardButton("✏️ Свой вариант", callback_data="select_trans::custom")])
+    
+    # === НОВОЕ ИЗМЕНЕНИЕ: Добавлена кнопка переписать прямо на этапе выбора перевода ===
+    keyboard.append([InlineKeyboardButton("🔁 Переписать слово", callback_data="action::rewrite_early")])
 
     await context.bot.send_message(
         chat_id=chat_id,
@@ -224,12 +237,24 @@ async def handle_text(update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     mode = context.user_data.get('mode')
 
-    if mode == 'await_rewrite':
-        words_queue = context.user_data.get('words_queue', [])
-        if words_queue:
-            words_queue[0] = text
-            context.user_data['words_queue'] = words_queue
-        await context.bot.send_message(chat_id=chat_id, text="Слово обновлено! Обрабатываю...")
+    # === ИЗМЕНЕНИЕ 2: Улучшенное переписывание слова ===
+    if mode == 'await_rewrite_words':
+        # Обрабатываем ввод слов через запятую как при первом вводе
+        words = [w.strip() for w in text.replace('\n', ',').split(',') if w.strip()]
+        if not words:
+            await context.bot.send_message(chat_id=chat_id, text="Не удалось извлечь слова. Попробуйте снова.")
+            return
+        
+        # Удаляем текущее слово из очереди
+        words_queue = context.user_data.get('words_queue', [])[1:]
+        # Добавляем новые слова в начало очереди
+        new_queue = words + words_queue
+        context.user_data['words_queue'] = new_queue
+        
+        await context.bot.send_message(
+            chat_id=chat_id, 
+            text=f"✅ Слова обновлены! Теперь в очереди: {len(new_queue)} слов.\nОбрабатываю следующее слово..."
+        )
         await process_next_word(context, chat_id)
         return
 
@@ -280,11 +305,35 @@ async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     chat_id = query.message.chat_id
 
+    # === ИЗМЕНЕНИЕ 3: Обработка завершающего меню ===
+    if data == "post_add":
+        context.user_data.clear()
+        await add_word(update, context)
+        return
+    if data == "post_quiz":
+        await context.bot.send_message(chat_id=chat_id, text="🧠 Режим проверки знаний скоро появится!")
+        # Показываем то же меню снова
+        keyboard = [
+            [InlineKeyboardButton("Добавить слово", callback_data="post_add")],
+            [InlineKeyboardButton("Проверить знания", callback_data="post_quiz")],
+            [InlineKeyboardButton("Завершить программу", callback_data="post_finish")]
+        ]
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Что дальше?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+    if data == "post_finish":
+        context.user_data.clear()
+        await context.bot.send_message(chat_id=chat_id, text="👋 До свидания! Чтобы начать снова, нажмите /start.")
+        return
+
     if data == "mode::add":
         await add_word(update, context)
         return
     if data == "mode::quiz":
-        await context.bot.send_message(chat_id=chat_id, text="Режим проверки знаний скоро появится!")
+        await context.bot.send_message(chat_id=chat_id, text="🧠 Режим проверки знаний скоро появится!")
         return
 
     if data in ("lang::ru", "lang::en"):
@@ -292,7 +341,7 @@ async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['src'] = lang
         context.user_data['dest'] = 'en' if lang == 'ru' else 'ru'
         context.user_data['mode'] = 'waiting_words'
-        await context.bot.send_message(chat_id=chat_id, text="Введите одно или несколько слов через запятую:")
+        await context.bot.send_message(chat_id=chat_id, text="🔤 Введите одно или несколько слов через запятую:")
         return
 
     if data.startswith("select_trans::"):
@@ -303,7 +352,7 @@ async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
 
         if selected == "custom":
             context.user_data['mode'] = 'await_custom_translation'
-            await context.bot.send_message(chat_id=chat_id, text="Введите свой перевод:")
+            await context.bot.send_message(chat_id=chat_id, text="✏️ Введите свой перевод:")
             return
         else:
             translation = selected
@@ -317,15 +366,21 @@ async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
         word_en = context.user_data['pending_word_en']
         word_ru = context.user_data['pending_word_ru']
 
+        # === ИЗМЕНЕНИЕ 1: Исправлена логика для "Своё определение" ===
+        if choice == "custom":
+            context.user_data['mode'] = 'await_custom_definition'
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="✏️ Введите своё определение для слова:"
+            )
+            return
+            
         if choice == "orig":
             definition = context.user_data.get('cambridge_definition_en', '')
             def_lang = 'en'
         elif choice == "trans":
             definition = context.user_data.get('cambridge_definition_ru', '')
             def_lang = 'ru'
-        elif choice == "custom":
-            # Этот случай не должен срабатывать здесь — он обрабатывается отдельно
-            return
         else:
             return
 
@@ -348,9 +403,22 @@ async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("action::"):
         action = data.split("::")[1]
+        
+        # === НОВОЕ ИЗМЕНЕНИЕ: Обработка раннего переписывания слова ===
+        if action == "rewrite_early":
+            context.user_data['mode'] = 'await_rewrite_words'
+            await context.bot.send_message(
+                chat_id=chat_id, 
+                text="✏️ Введите исправленное слово или несколько слов через запятую (как при первом вводе):"
+            )
+            return
+            
         if action == "rewrite":
-            context.user_data['mode'] = 'await_rewrite'
-            await context.bot.send_message(chat_id=chat_id, text="Введите исправленное слово:")
+            context.user_data['mode'] = 'await_rewrite_words'
+            await context.bot.send_message(
+                chat_id=chat_id, 
+                text="✏️ Введите исправленное слово или несколько слов через запятую (как при первом вводе):"
+            )
             return
         elif action == "skip":
             words_queue = context.user_data.get('words_queue', [])
