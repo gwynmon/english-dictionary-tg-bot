@@ -1,22 +1,64 @@
+# Структура бота для изучения английских слов
+# ===========================================
+# 1. Инициализация:
+#    - Загрузка переменных окружения (.env)
+#    - Настройка логгера
+#    - Инициализация переводчиков (Google Translate, DeepL)
+# 
+# 2. Вспомогательные функции:
+#    - fetch_cambridge_definition(): получение определения слова с Cambridge Dictionary
+#    - translate_definition_to_russian(): перевод определения на русский
+#    - get_translations(): получение переводов через Google и DeepL
+#    - send_word_to_database(): отправка данных слова на локальный сервер
+# 
+# 3. Основные обработчики:
+#    - start(): приветственное сообщение с выбором режима
+#    - add_word(): выбор языка добавляемого слова
+#    - handle_text(): обработка текстовых сообщений пользователя
+#    - callback_query_handler(): обработка нажатий кнопок
+#    - process_next_word(): обработка следующего слова из очереди
+#    - handle_word_definition_selection(): выбор определения для слова
+#    - request_rewrite_words(): запрос исправленных слов у пользователя
+# 
+# 4. Поток работы:
+#    - Пользователь выбирает режим (добавить слово/проверить знания)
+#    - Выбирает язык исходного слова
+#    - Вводит слова через запятую
+#    - Для каждого слова:
+#        * Получает переводы от Google и DeepL
+#        * Выбирает перевод или вводит свой
+#        * Получает определение из Cambridge Dictionary
+#        * Выбирает вариант определения или вводит своё
+#        * Данные отправляются на локальный сервер
+#    - После обработки всех слов показывается меню дальнейших действий
+# 
+# 5. Отправка данных на сервер:
+#    - При успешном выборе перевода и определения
+#    - При вводе пользовательского определения
+#    - Формат данных: JSON с полями userId, theme, word, translation, definition, definition_lang
+#    - Адрес: http://127.0.0.1:5000/api/v1/words
+#    - Требуется заголовок X-API-Key из .env
+
+import os
+import re
+import logging
+import requests
+from typing import Dict, Optional, Tuple
+from dotenv import load_dotenv
+from googletrans import Translator as GoogleTranslator
+import deepl
+from bs4 import BeautifulSoup
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters, ContextTypes
 )
-from dotenv import load_dotenv
-from googletrans import Translator as GoogleTranslator
-import deepl
-import os
-import logging
-import requests
-from bs4 import BeautifulSoup
-import re
 
 # === ИНИЦИАЛИЗАЦИЯ ===
 load_dotenv('.env')
 
 google_translator = GoogleTranslator()
-DEEPL_API_KEY = os.getenv('DeepL_API_Key')
+DEEPL_API_KEY = os.getenv('DEEPL_API_KEY')
 deepl_translator = deepl.Translator(DEEPL_API_KEY) if DEEPL_API_KEY else None
 
 logging.basicConfig(
@@ -26,8 +68,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv('TOKEN')
+BOT_API_KEY = os.getenv('BOT_API_KEY')
 if not TOKEN:
     raise RuntimeError('TOKEN не задан в .env')
+if not BOT_API_KEY:
+    logger.warning('BOT_API_KEY не задан в .env. Отправка данных на сервер будет недоступна.')
 
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 
@@ -67,7 +112,7 @@ async def translate_definition_to_russian(definition: str) -> str:
         logger.warning("Не удалось перевести определение: %s", e)
         return ""
 
-async def get_translations(word: str, src: str, dest: str):
+async def get_translations(word: str, src: str, dest: str) -> Dict[str, str]:
     """Получает переводы через Google и DeepL (если доступен)."""
     translations = {}
 
@@ -92,9 +137,58 @@ async def get_translations(word: str, src: str, dest: str):
 
     return translations
 
+def send_word_to_database(payload: Dict, chat_id: int) -> bool:
+    """
+    Отправляет данные слова на локальный сервер.
+    Возвращает True при успешной отправке, False в случае ошибки.
+    """
+    if not BOT_API_KEY:
+        logger.error("BOT_API_KEY не задан. Проверьте .env файл.")
+        return False
+        
+    url = 'http://127.0.0.1:5000/api/v1/words'
+    headers = {
+        'X-API-Key': BOT_API_KEY,
+        'Content-Type': 'application/json'
+    }
+    server_payload = {
+        'userId': chat_id,
+        'theme': 'General',
+        'word': payload['word_en'],
+        'translation': payload['word_ru'],
+        'definition': payload['definition'],
+        'definition_lang': payload['definition_lang']
+    }
+    
+    logger.info(f"Отправка на сервер URL: {url}")
+    logger.info(f"Заголовки: {headers}")
+    logger.info(f"Данные: {server_payload}")
+    
+    try:
+        response = requests.post(url, json=server_payload, headers=headers, timeout=15)
+        logger.info(f"Статус ответа: {response.status_code}")
+        logger.info(f"Тело ответа: {response.text[:200]}")  # Первые 200 символов
+        
+        if response.status_code == 401:
+            logger.error("Ошибка 401: Неверный или отсутствующий API ключ")
+            logger.error("Проверьте, что BOT_API_KEY в .env совпадает с ключом на сервере")
+        elif response.status_code >= 400:
+            logger.error(f"Ошибка сервера {response.status_code}: {response.text}")
+            
+        response.raise_for_status()
+        logger.info("Слово успешно отправлено на сервер")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Ошибка при отправке на сервер: {e}")
+        logger.error(f"URL: {url}")
+        logger.error(f"Заголовки: {headers}")
+        logger.error(f"Данные: {server_payload}")
+        return False
+
 # === ОСНОВНЫЕ ОБРАБОТЧИКИ ===
 
 async def start(update, context: ContextTypes.DEFAULT_TYPE):
+    """Приветственное сообщение с выбором режима работы."""
     context.user_data.clear()
     chat_id = update.effective_chat.id
 
@@ -119,6 +213,7 @@ async def start(update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def add_word(update, context: ContextTypes.DEFAULT_TYPE):
+    """Запрашивает выбор языка добавляемого слова."""
     chat_id = update.effective_chat.id
     keyboard = [
         [InlineKeyboardButton("Русское слово", callback_data="lang::ru")],
@@ -133,9 +228,9 @@ async def add_word(update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def process_next_word(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """Обрабатывает следующее слово из очереди."""
     words_queue = context.user_data.get('words_queue', [])
     if not words_queue:
-        # === ИЗМЕНЕНИЕ 3: Добавлено завершающее меню ===
         keyboard = [
             [InlineKeyboardButton("Добавить слово", callback_data="post_add")],
             [InlineKeyboardButton("Проверить знания", callback_data="post_quiz")],
@@ -169,8 +264,6 @@ async def process_next_word(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     for tr in unique_variants:
         keyboard.append([InlineKeyboardButton(tr, callback_data=f"select_trans::{tr}")])
     keyboard.append([InlineKeyboardButton("✏️ Свой вариант", callback_data="select_trans::custom")])
-    
-    # === НОВОЕ ИЗМЕНЕНИЕ: Добавлена кнопка переписать прямо на этапе выбора перевода ===
     keyboard.append([InlineKeyboardButton("🔁 Переписать слово", callback_data="action::rewrite_early")])
 
     await context.bot.send_message(
@@ -181,8 +274,12 @@ async def process_next_word(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     context.user_data['mode'] = 'selecting_translation'
 
 
-async def proceed_with_word(chat_id, context, word_en: str, word_ru: str):
-    """Предлагает выбрать вариант определения для слова."""
+async def handle_word_definition_selection(chat_id: int, context: ContextTypes.DEFAULT_TYPE, 
+                                          word_en: str, word_ru: str):
+    """
+    Предлагает выбрать вариант определения для слова.
+    Получает определение из Cambridge Dictionary и предлагает варианты.
+    """
     definition_en = fetch_cambridge_definition(word_en)
 
     context.user_data['pending_word_en'] = word_en
@@ -199,7 +296,7 @@ async def proceed_with_word(chat_id, context, word_en: str, word_ru: str):
         options.append((en_label, "orig"))
         try:
             # Синхронный вызов — без await!
-            result = google_translator.translate(definition_en, src='en', dest='ru')
+            result = await google_translator.translate(definition_en, src='en', dest='ru')
             definition_ru = result.text.strip()
             context.user_data['cambridge_definition_ru'] = definition_ru
             ru_label = truncate(definition_ru)
@@ -232,21 +329,38 @@ async def proceed_with_word(chat_id, context, word_en: str, word_ru: str):
     context.user_data['mode'] = 'choosing_definition'
 
 
+async def request_rewrite_words(update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, early_rewrite: bool = False):
+    """
+    Запрашивает у пользователя исправленные слова.
+    early_rewrite=True для переписывания на этапе выбора перевода.
+    """
+    context.user_data['mode'] = 'await_rewrite_words'
+    context.user_data['early_rewrite'] = early_rewrite
+    
+    await context.bot.send_message(
+        chat_id=chat_id, 
+        text="✏️ Введите исправленное слово или несколько слов через запятую (как при первом вводе):"
+    )
+
+
 async def handle_text(update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает все текстовые сообщения пользователя."""
     chat_id = update.effective_chat.id
     text = update.message.text.strip()
     mode = context.user_data.get('mode')
 
-    # === ИЗМЕНЕНИЕ 2: Улучшенное переписывание слова ===
+    # Обработка переписывания слов
     if mode == 'await_rewrite_words':
-        # Обрабатываем ввод слов через запятую как при первом вводе
         words = [w.strip() for w in text.replace('\n', ',').split(',') if w.strip()]
         if not words:
             await context.bot.send_message(chat_id=chat_id, text="Не удалось извлечь слова. Попробуйте снова.")
             return
         
         # Удаляем текущее слово из очереди
-        words_queue = context.user_data.get('words_queue', [])[1:]
+        words_queue = context.user_data.get('words_queue', [])
+        if words_queue:
+            words_queue = words_queue[1:]
+        
         # Добавляем новые слова в начало очереди
         new_queue = words + words_queue
         context.user_data['words_queue'] = new_queue
@@ -255,9 +369,17 @@ async def handle_text(update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=chat_id, 
             text=f"✅ Слова обновлены! Теперь в очереди: {len(new_queue)} слов.\nОбрабатываю следующее слово..."
         )
-        await process_next_word(context, chat_id)
+        
+        # Если это раннее переписывание (на этапе перевода), возвращаемся к выбору перевода
+        if context.user_data.get('early_rewrite', False):
+            context.user_data['early_rewrite'] = False
+            await process_next_word(context, chat_id)
+        else:
+            # Иначе продолжаем с определением для первого нового слова
+            await process_next_word(context, chat_id)
         return
 
+    # Прием слов для добавления
     if mode == 'waiting_words':
         words = [w.strip() for w in text.replace('\n', ',').split(',') if w.strip()]
         if not words:
@@ -267,6 +389,7 @@ async def handle_text(update, context: ContextTypes.DEFAULT_TYPE):
         await process_next_word(context, chat_id)
         return
 
+    # Прием пользовательского перевода
     if mode == 'await_custom_translation':
         word = context.user_data['current_word']
         translation = text
@@ -274,9 +397,10 @@ async def handle_text(update, context: ContextTypes.DEFAULT_TYPE):
         dest = context.user_data['dest']
         word_en = translation if dest == 'en' else word
         word_ru = word if src == 'ru' else translation
-        await proceed_with_word(chat_id, context, word_en, word_ru)
+        await handle_word_definition_selection(chat_id, context, word_en, word_ru)
         return
 
+    # Прием пользовательского определения
     if mode == 'await_custom_definition':
         word_en = context.user_data['pending_word_en']
         word_ru = context.user_data['pending_word_ru']
@@ -287,12 +411,22 @@ async def handle_text(update, context: ContextTypes.DEFAULT_TYPE):
             'definition': custom_def,
             'definition_lang': 'custom'
         }
-        context.user_data['pending_payload'] = payload
-        logger.info("Сохранено с пользовательским определением: %s", payload)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"✅ Слово «{word_en}» сохранено с вашим определением!"
-        )
+        
+        # Отправляем данные на сервер
+        success = send_word_to_database(payload, chat_id)
+        if success:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ Слово «{word_en}» сохранено с вашим определением!"
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ Слово «{word_en}» сохранено локально, но не отправлено на сервер."
+            )
+            logger.error("Не удалось отправить слово с пользовательским определением: %s", payload)
+        
+        # Переходим к следующему слову
         words_queue = context.user_data.get('words_queue', [])
         context.user_data['words_queue'] = words_queue[1:] if words_queue else []
         await process_next_word(context, chat_id)
@@ -300,12 +434,13 @@ async def handle_text(update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает все нажатия кнопок."""
     query = update.callback_query
     await query.answer()
     data = query.data
     chat_id = query.message.chat_id
 
-    # === ИЗМЕНЕНИЕ 3: Обработка завершающего меню ===
+    # Обработка завершающего меню
     if data == "post_add":
         context.user_data.clear()
         await add_word(update, context)
@@ -329,6 +464,7 @@ async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text="👋 До свидания! Чтобы начать снова, нажмите /start.")
         return
 
+    # Выбор режима
     if data == "mode::add":
         await add_word(update, context)
         return
@@ -336,6 +472,7 @@ async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text="🧠 Режим проверки знаний скоро появится!")
         return
 
+    # Выбор языка
     if data in ("lang::ru", "lang::en"):
         lang = data.split("::")[1]
         context.user_data['src'] = lang
@@ -344,6 +481,7 @@ async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text="🔤 Введите одно или несколько слов через запятую:")
         return
 
+    # Выбор перевода
     if data.startswith("select_trans::"):
         selected = data.split("::", 1)[1]
         word = context.user_data['current_word']
@@ -358,15 +496,15 @@ async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
             translation = selected
             word_en = translation if dest == 'en' else word
             word_ru = word if src == 'ru' else translation
-            await proceed_with_word(chat_id, context, word_en, word_ru)
+            await handle_word_definition_selection(chat_id, context, word_en, word_ru)
             return
 
+    # Выбор определения
     if data.startswith("def_choice::"):
         choice = data.split("::", 1)[1]
         word_en = context.user_data['pending_word_en']
         word_ru = context.user_data['pending_word_ru']
 
-        # === ИЗМЕНЕНИЕ 1: Исправлена логика для "Своё определение" ===
         if choice == "custom":
             context.user_data['mode'] = 'await_custom_definition'
             await context.bot.send_message(
@@ -390,45 +528,50 @@ async def callback_query_handler(update, context: ContextTypes.DEFAULT_TYPE):
             'definition': definition,
             'definition_lang': def_lang
         }
-        context.user_data['pending_payload'] = payload
-        logger.info("Сохранено: %s", payload)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"✅ Слово «{word_en}» сохранено!"
-        )
+        
+        # Отправляем данные на сервер
+        success = send_word_to_database(payload, chat_id)
+        if success:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ Слово «{word_en}» сохранено!"
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ Слово «{word_en}» сохранено локально, но не отправлено на сервер."
+            )
+            logger.error("Не удалось отправить слово: %s", payload)
+        
         words_queue = context.user_data.get('words_queue', [])
         context.user_data['words_queue'] = words_queue[1:] if words_queue else []
         await process_next_word(context, chat_id)
         return
 
+    # Действия с словом
     if data.startswith("action::"):
         action = data.split("::")[1]
         
-        # === НОВОЕ ИЗМЕНЕНИЕ: Обработка раннего переписывания слова ===
         if action == "rewrite_early":
-            context.user_data['mode'] = 'await_rewrite_words'
-            await context.bot.send_message(
-                chat_id=chat_id, 
-                text="✏️ Введите исправленное слово или несколько слов через запятую (как при первом вводе):"
-            )
+            await request_rewrite_words(update, context, chat_id, early_rewrite=True)
             return
             
         if action == "rewrite":
-            context.user_data['mode'] = 'await_rewrite_words'
-            await context.bot.send_message(
-                chat_id=chat_id, 
-                text="✏️ Введите исправленное слово или несколько слов через запятую (как при первом вводе):"
-            )
+            await request_rewrite_words(update, context, chat_id)
             return
+            
         elif action == "skip":
             words_queue = context.user_data.get('words_queue', [])
-            context.user_data['words_queue'] = words_queue[1:] if words_queue else []
-            await context.bot.send_message(chat_id=chat_id, text="⏭ Слово пропущено.")
+            if words_queue:
+                skipped_word = words_queue[0]
+                context.user_data['words_queue'] = words_queue[1:]
+                await context.bot.send_message(chat_id=chat_id, text=f"⏭ Слово «{skipped_word}» пропущено.")
             await process_next_word(context, chat_id)
             return
 
 
 def main():
+    """Основная функция запуска бота."""
     application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler('start', start))
