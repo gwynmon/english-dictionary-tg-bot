@@ -145,7 +145,7 @@ def send_word_to_database(payload: Dict, chat_id: int) -> bool:
     if not BOT_API_KEY:
         logger.error("BOT_API_KEY не задан. Проверьте .env файл.")
         return False
-        
+    
     url = 'http://127.0.0.1:5000/api/v1/words'
     headers = {
         'X-API-Key': BOT_API_KEY,
@@ -154,10 +154,10 @@ def send_word_to_database(payload: Dict, chat_id: int) -> bool:
     server_payload = {
         'userId': chat_id,
         'theme': 'General',
-        'word': payload['word_en'],
-        'translation': payload['word_ru'],
-        'definition': payload['definition'],
-        'definition_lang': payload['definition_lang']
+        'word': payload['word_en'].title(),
+        'translation': payload['word_ru'].title(),
+        'definition': payload['definition'].title(),
+        'definition_lang': payload['definition_lang'].title()
     }
     
     logger.info(f"Отправка на сервер URL: {url}")
@@ -345,7 +345,7 @@ async def request_rewrite_words(update, context: ContextTypes.DEFAULT_TYPE, chat
 
 async def handle_text(update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает все текстовые сообщения пользователя."""
-    chat_id = update.effective_chat.id
+    chat_id = update.effective_chat.id  
     text = update.message.text.strip()
     mode = context.user_data.get('mode')
 
@@ -406,10 +406,10 @@ async def handle_text(update, context: ContextTypes.DEFAULT_TYPE):
         word_ru = context.user_data['pending_word_ru']
         custom_def = text
         payload = {
-            'word_en': word_en,
-            'word_ru': word_ru,
-            'definition': custom_def,
-            'definition_lang': 'custom'
+            'word_en': word_en.title(),
+            'word_ru': word_ru.title(),
+            'definition': custom_def.title(),
+            'definition_lang': 'Custom'
         }
         
         # Отправляем данные на сервер
