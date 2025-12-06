@@ -91,50 +91,75 @@ public class WordService
         var db = _redis.GetDatabase();
 
         // 1. Попробуем взять из кэша
-        var cached = await db.StringGetAsync(cacheKey);
-        if (cached.HasValue)
-        {
-            _logger.LogInformation("Cache hit for user {UserId}, theme '{Theme}'", userId, theme);
-            var words = JsonSerializer.Deserialize<List<WordResponse>>(cached!,
-                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-            return words!;
-        }
+        //var cached = await db.StringGetAsync(cacheKey);
+        //if (cached.HasValue)
+        //{
+        //    _logger.LogInformation("Cache hit for user {UserId}, theme '{Theme}'", userId, theme);
+        //    var words = JsonSerializer.Deserialize<List<WordResponse>>(cached!, 
+        //        new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        //    return words!;
+        //}
 
-        _logger.LogInformation("Cache miss for user {UserId}, theme '{Theme}'. Loading from DB...", userId, theme);
-        // 2. Если нет в кэше — читаем из БД
+        // 2. Читаем и обновляем в одной транзакции
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync();
+        await using var tx = await conn.BeginTransactionAsync();
 
-        var wordsFromDb = new List<WordResponse>();
-        await using (var cmd = new NpgsqlCommand(@"
-            SELECT w.word, w.translation, w.definition
-            FROM words w
-            JOIN themes t ON w.theme_id = t.id
-            WHERE t.user_id = @UserId AND t.name = @ThemeName
-            ORDER BY w.created_at;", conn))
+        try
         {
-            cmd.Parameters.AddWithValue("UserId", userId);
-            cmd.Parameters.AddWithValue("ThemeName", theme);
-
-            await using var reader = await cmd.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+            // Получаем ID и данные слов
+            var words = new List<(int Id, WordResponse Response)>();
+            await using (var cmd = new NpgsqlCommand(@"
+                SELECT w.id, w.word, w.translation, w.definition
+                FROM words w
+                JOIN themes t ON w.theme_id = t.id
+                WHERE t.user_id = @UserId AND t.name = @ThemeName
+                ORDER BY w.created_at;", conn, tx))
             {
-                wordsFromDb.Add(new WordResponse
+                cmd.Parameters.AddWithValue("UserId", userId);
+                cmd.Parameters.AddWithValue("ThemeName", theme);
+
+                await using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
                 {
-                    Word = reader.GetString("word"),
-                    Translation = reader.IsDBNull("translation") ? null : reader.GetString("translation"),
-                    Definition = reader.IsDBNull("definition") ? null : reader.GetString("definition")
-                });
+                    words.Add((
+                        reader.GetInt32("id"),
+                        new WordResponse
+                        {
+                            Word = reader.GetString("word"),
+                            Translation = reader.IsDBNull("translation") ? null : reader.GetString("translation"),
+                            Definition = reader.IsDBNull("definition") ? null : reader.GetString("definition")
+                        }
+                    ));
+                }
             }
+
+            // Увеличиваем access_count для всех выбранных слов
+            if (words.Count > 0)
+            {
+                var ids = string.Join(",", words.Select(w => w.Id));
+                await using var updateCmd = new NpgsqlCommand($@"
+                    UPDATE words 
+                    SET access_count = access_count + 1 
+                    WHERE id IN ({ids});", conn, tx);
+                await updateCmd.ExecuteNonQueryAsync();
+            }
+
+            await tx.CommitAsync();
+
+            // Кэшируем (уже после увеличения счётчика)
+            var wordResponses = words.Select(w => w.Response).ToList();
+            var json = JsonSerializer.Serialize(wordResponses,
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            await db.StringSetAsync(cacheKey, json, TimeSpan.FromMinutes(10));
+
+            _logger.LogInformation("Loaded and incremented access_count for {Count} words", words.Count);
+            return wordResponses;
         }
-
-        _logger.LogInformation("Loaded {Count} words from DB for user {UserId}, theme '{Theme}'", wordsFromDb.Count, userId, theme);
-
-        // 3. Сохраняем в кэш на 10 минут
-        var json = JsonSerializer.Serialize(wordsFromDb, 
-            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-        await db.StringSetAsync(cacheKey, json, TimeSpan.FromMinutes(10));
-
-        return wordsFromDb;
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
     }
 }

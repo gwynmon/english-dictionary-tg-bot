@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS words (
     theme_id INT NOT NULL REFERENCES themes(id) ON DELETE CASCADE,
     word TEXT NOT NULL,
     translation TEXT,
+    access_count INT NOT NULL DEFAULT 0,
     definition TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(theme_id, word)
