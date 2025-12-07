@@ -139,20 +139,22 @@ def send_word_to_database(payload: Dict, chat_id: int) -> bool:
         True при успешной отправке, False в случае ошибки
     """
     url = f'{BASE_API_URL}/words'
+
     headers = {
         'X-API-Key': BOT_API_KEY,
         'Content-Type': 'application/json'
     }
+
     server_payload = {
-        'user_id': chat_id,
-        'theme': 'General',
+        'userId': chat_id,
         'word': payload['word_en'],
         'translation': payload['word_ru'],
-        'definition': payload['definition'],
-        'definition_lang': payload['definition_lang']
+        'definition': payload['definition']
     }
     
-    logger.info(f"Отправка на сервер URL: {url}")
+    logger.info(f"Отправка на сервер URL: {url}, пользователя {chat_id}")
+    logger.info(f"Заголовки запроса: {headers}")
+    logger.info(f"Данные для отправки: {server_payload}")
     
     try:
         response = requests.post(url, json=server_payload, headers=headers, timeout=15)
@@ -181,19 +183,18 @@ async def get_user_words(user_id: int) -> List[Dict[str, Any]]:
     Returns:
         Список слов с их данными
     """
-    url = f"{BASE_API_URL}/words?user_id={user_id}&theme=General"
+    # ИЗМЕНЕНО: userId вместо user_id, убран параметр theme
+    url = f"{BASE_API_URL}/words?userId={user_id}"
     headers = {'X-API-Key': BOT_API_KEY}
     
     try:
         logger.info(f"Запрос слов для пользователя {user_id} с URL: {url}")
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
-        words = response.json()
+        data = response.json()  # ИЗМЕНЕНО: переменная переименована для ясности
         
-        if isinstance(words, dict) and 'words' in words:
-            words_list = words['words']
-        else:
-            words_list = words
+        # ИЗМЕНЕНО: обработка нового формата ответа
+        words_list = data.get('words', []) if isinstance(data, dict) else data
             
         logger.info(f"Получено {len(words_list)} слов для пользователя {user_id}")
         return words_list
@@ -217,12 +218,14 @@ def generate_options(words: List[Dict], correct_value: str, field: str, count: i
     if not words or not correct_value:
         return []
     
-    # Собираем все значения указанного поля, кроме правильного ответа
-    all_values = [
-        str(w[field]).strip() 
-        for w in words 
-        if field in w and w[field] and str(w[field]).strip() != correct_value and len(str(w[field]).strip()) > 1
-    ]
+    # ИЗМЕНЕНО: обработка новых имен полей
+    all_values = []
+    for w in words:
+        # Проверяем наличие нужного поля в данных
+        if field in w and w[field] and str(w[field]).strip() != correct_value:
+            value = str(w[field]).strip()
+            if len(value) > 1:  # Игнорируем слишком короткие значения
+                all_values.append(value)
     
     # Удаляем дубликаты
     all_values = list(set(all_values))
@@ -317,7 +320,12 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     questions = []
     
     # Первые 5 слов для перевода (русский -> английский)
-    translation_words = [w for w in quiz_words if w.get('word') and w.get('translation')][:5]
+    # ИЗМЕНЕНО: используем новые имена полей
+    translation_words = [
+        w for w in quiz_words 
+        if w.get('word') and w.get('translation')
+    ][:5]
+    
     for word in translation_words:
         options = generate_options(quiz_words, word['word'], 'word')
         if len(options) >= 4:  # Убедимся, что есть достаточно вариантов
@@ -330,6 +338,7 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })
     
     # Следующие 5 слов для определений (английский -> определение)
+    # ИЗМЕНЕНО: используем новые имена полей
     definition_words = [
         w for w in quiz_words 
         if w.get('word') and w.get('definition') and w['definition'].strip()
@@ -803,7 +812,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'word_en': word_en,
             'word_ru': word_ru,
             'definition': custom_def,
-            'definition_lang': 'custom'
         }
         
         # Отправляем данные на сервер
@@ -917,10 +925,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
         if choice == "orig":
             definition = context.user_data.get('cambridge_definition_en', '')
-            def_lang = 'en'
         elif choice == "trans":
             definition = context.user_data.get('cambridge_definition_ru', '')
-            def_lang = 'ru'
         else:
             return
 
@@ -928,7 +934,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             'word_en': word_en,
             'word_ru': word_ru,
             'definition': definition,
-            'definition_lang': def_lang
         }
         
         # Отправляем данные на сервер
