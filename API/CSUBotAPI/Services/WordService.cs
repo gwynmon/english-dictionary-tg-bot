@@ -24,12 +24,11 @@ public class WordService
 
     public async Task AddWordAsync(AddWordRequest request)
     {
-        _logger.LogInformation("Adding word '{Word}' for user {UserId} in theme '{Theme}'", 
-            request.Word, request.UserId, request.Theme);
+        _logger.LogInformation("Adding word '{Word}' for user {UserId}", 
+            request.Word, request.UserId);
 
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync();
-
         await using var tx = await conn.BeginTransactionAsync();
 
         try
@@ -44,27 +43,13 @@ public class WordService
                 await cmd.ExecuteNonQueryAsync();
             }
 
-            // 2. Получить или создать тему
-            int themeId;
+            // 2. Добавить слово напрямую (без темы)
             await using (var cmd = new NpgsqlCommand(@"
-                INSERT INTO themes (user_id, name) 
-                VALUES (@UserId, @ThemeName) 
-                ON CONFLICT (user_id, name) DO NOTHING;
-                
-                SELECT id FROM themes WHERE user_id = @UserId AND name = @ThemeName;", conn, tx))
+                INSERT INTO words (user_id, word, translation, definition) 
+                VALUES (@UserId, @Word, @Translation, @Definition)
+                ON CONFLICT (user_id, word) DO NOTHING;", conn, tx))
             {
                 cmd.Parameters.AddWithValue("UserId", request.UserId);
-                cmd.Parameters.AddWithValue("ThemeName", request.Theme);
-                themeId = (int)(await cmd.ExecuteScalarAsync()!);
-            }
-
-            // 3. Добавить слово
-            await using (var cmd = new NpgsqlCommand(@"
-                INSERT INTO words (theme_id, word, translation, definition) 
-                VALUES (@ThemeId, @Word, @Translation, @Definition)
-                ON CONFLICT (theme_id, word) DO NOTHING;", conn, tx))
-            {
-                cmd.Parameters.AddWithValue("ThemeId", themeId);
                 cmd.Parameters.AddWithValue("Word", request.Word);
                 cmd.Parameters.AddWithValue("Translation", request.Translation ?? (object)DBNull.Value);
                 cmd.Parameters.AddWithValue("Definition", request.Definition ?? (object)DBNull.Value);
@@ -73,7 +58,8 @@ public class WordService
 
             await tx.CommitAsync();
 
-            var cacheKey = $"user:{request.UserId}:theme:{request.Theme}";
+            // Инвалидация кэша (если используешь кэширование в GetWordsAsync)
+            var cacheKey = $"user:{request.UserId}:words";
             await _redis.GetDatabase().KeyDeleteAsync(cacheKey);
         }
         catch
@@ -85,56 +71,55 @@ public class WordService
         _logger.LogInformation("Word '{Word}' added successfully", request.Word);
     }
 
-    public async Task<List<WordResponse>> GetWordsAsync(long userId, string theme)
+    public async Task<(List<WordResponse> Words, int TotalAccessCount)>  GetWordsAsync(long userId)
     {
-        var cacheKey = $"user:{userId}:theme:{theme}";
-        var db = _redis.GetDatabase();
-
-        // 1. Попробуем взять из кэша
-        var cached = await db.StringGetAsync(cacheKey);
-        if (cached.HasValue)
-        {
-            _logger.LogInformation("Cache hit for user {UserId}, theme '{Theme}'", userId, theme);
-            var words = JsonSerializer.Deserialize<List<WordResponse>>(cached!,
-                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-            return words!;
-        }
-
-        _logger.LogInformation("Cache miss for user {UserId}, theme '{Theme}'. Loading from DB...", userId, theme);
-        // 2. Если нет в кэше — читаем из БД
+            // Всегда читаем из БД и инкрементируем — кэш отключён для этого эндпоинта
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync();
+        await using var tx = await conn.BeginTransactionAsync();
 
-        var wordsFromDb = new List<WordResponse>();
-        await using (var cmd = new NpgsqlCommand(@"
-            SELECT w.word, w.translation, w.definition
-            FROM words w
-            JOIN themes t ON w.theme_id = t.id
-            WHERE t.user_id = @UserId AND t.name = @ThemeName
-            ORDER BY w.created_at;", conn))
+        try
         {
-            cmd.Parameters.AddWithValue("UserId", userId);
-            cmd.Parameters.AddWithValue("ThemeName", theme);
+            // 1. Получаем слова и одновременно увеличиваем access_count
+            var words = new List<WordResponse>();
+            await using (var cmd = new NpgsqlCommand(@"
+                -- Сначала обновляем счётчики
+                UPDATE words 
+                SET access_count = access_count + 1 
+                WHERE user_id = @UserId;
 
-            await using var reader = await cmd.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+                -- Затем читаем обновлённые данные
+                SELECT word, translation, definition, access_count
+                FROM words
+                WHERE user_id = @UserId
+                ORDER BY created_at;", conn, tx))
             {
-                wordsFromDb.Add(new WordResponse
+                cmd.Parameters.AddWithValue("UserId", userId);
+                await using var reader = await cmd.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
                 {
-                    Word = reader.GetString("word"),
-                    Translation = reader.IsDBNull("translation") ? null : reader.GetString("translation"),
-                    Definition = reader.IsDBNull("definition") ? null : reader.GetString("definition")
-                });
+                    words.Add(new WordResponse
+                    {
+                        Word = reader.GetString("word"),
+                        Translation = reader.IsDBNull("translation") ? null : reader.GetString("translation"),
+                        Definition = reader.IsDBNull("definition") ? null : reader.GetString("definition"),
+                        AccessCount = reader.GetInt32("access_count") // ← возвращаем счётчик
+                    });
+                }
             }
+
+            await tx.CommitAsync();
+
+            // Считаем общий access_count по всем словам пользователя (опционально)
+            int totalAccessCount = words.Sum(w => w.AccessCount);
+
+            return (words, totalAccessCount);
         }
-
-        _logger.LogInformation("Loaded {Count} words from DB for user {UserId}, theme '{Theme}'", wordsFromDb.Count, userId, theme);
-
-        // 3. Сохраняем в кэш на 10 минут
-        var json = JsonSerializer.Serialize(wordsFromDb, 
-            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-        await db.StringSetAsync(cacheKey, json, TimeSpan.FromMinutes(10));
-
-        return wordsFromDb;
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
     }
 }

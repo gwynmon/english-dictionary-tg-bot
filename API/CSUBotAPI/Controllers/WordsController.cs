@@ -18,7 +18,7 @@ public class WordsController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> AddWord([FromBody] AddWordRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.Theme) || string.IsNullOrWhiteSpace(request.Word))
+        if (string.IsNullOrWhiteSpace(request.Word))
         {
             return BadRequest("Theme and Word are required.");
         }
@@ -28,12 +28,15 @@ public class WordsController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> GetWords([FromQuery] long userId, [FromQuery] string theme)
+    public async Task<IActionResult> GetWords([FromQuery] long userId)
     {
-        if (string.IsNullOrWhiteSpace(theme))
-            return BadRequest("Theme is required.");
-
-        var words = await _wordService.GetWordsAsync(userId, theme);
-        return Ok(new { theme, words });
+        var (words, totalAccessCount) = await _wordService.GetWordsAsync(userId);
+        
+        return Ok(new
+        {
+            userId,
+            totalAccessCount, // ← общий счётчик по всем словам
+            words              // ← каждый объект содержит свой AccessCount
+        });
     }
 }
