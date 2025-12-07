@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "SvAS63EtYWw=",
+  "dgSpecHash": "N1d464ufzdE=",
   "success": true,
-  "projectFilePath": "/Users/semen/dev/english-dictionary-tg-bot/API/CSUBotAPI/CSUBotAPI.csproj",
+  "projectFilePath": "/Users/semen/CSUBot/API/CSUBotAPI/CSUBotAPI.csproj",
   "expectedPackageFiles": [
     "/Users/semen/.nuget/packages/aspnetcore.healthchecks.npgsql/8.0.0/aspnetcore.healthchecks.npgsql.8.0.0.nupkg.sha512",
     "/Users/semen/.nuget/packages/dotenv.net/4.0.0/dotenv.net.4.0.0.nupkg.sha512",

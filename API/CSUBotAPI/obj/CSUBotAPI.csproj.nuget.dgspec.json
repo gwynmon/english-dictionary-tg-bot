@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "/Users/semen/dev/english-dictionary-tg-bot/API/CSUBotAPI/CSUBotAPI.csproj": {}
+    "/Users/semen/CSUBot/API/CSUBotAPI/CSUBotAPI.csproj": {}
   },
   "projects": {
-    "/Users/semen/dev/english-dictionary-tg-bot/API/CSUBotAPI/CSUBotAPI.csproj": {
+    "/Users/semen/CSUBot/API/CSUBotAPI/CSUBotAPI.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "/Users/semen/dev/english-dictionary-tg-bot/API/CSUBotAPI/CSUBotAPI.csproj",
+        "projectUniqueName": "/Users/semen/CSUBot/API/CSUBotAPI/CSUBotAPI.csproj",
         "projectName": "CSUBotAPI",
-        "projectPath": "/Users/semen/dev/english-dictionary-tg-bot/API/CSUBotAPI/CSUBotAPI.csproj",
+        "projectPath": "/Users/semen/CSUBot/API/CSUBotAPI/CSUBotAPI.csproj",
         "packagesPath": "/Users/semen/.nuget/packages/",
-        "outputPath": "/Users/semen/dev/english-dictionary-tg-bot/API/CSUBotAPI/obj/",
+        "outputPath": "/Users/semen/CSUBot/API/CSUBotAPI/obj/",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "/Users/semen/.nuget/NuGet/NuGet.Config"
